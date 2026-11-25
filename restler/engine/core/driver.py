@@ -27,6 +27,7 @@ import engine.core.sequences as sequences
 import engine.core.requests as requests
 import engine.primitives as primitives
 import engine.core.fuzzing_monitor as fuzzing_monitor
+import engine.core.state_machine as state_machine
 from engine.core.fuzzing_requests import FuzzingRequestCollection
 from engine.core.requests import GrammarRequestCollection
 from engine.core.requests import FailureInformation
@@ -38,6 +39,138 @@ from engine.errors import ExhaustSeqCollectionException
 from engine.errors import InvalidDictionaryException
 from engine.transport_layer import messaging
 from utils.logger import raw_network_logging as RAW_LOGGING
+
+
+def create_stateful_sequence_targets(fuzzing_requests):
+    """Builds a deterministic state-machine plan and converts it to sequences.
+
+    The state machine is derived from the dependencies that were already
+    inferred by the RESTler compiler.  This keeps stateful generation fully
+    compatible with the existing OpenAPI parsing and grammar format.
+    """
+    operations = state_machine.operations_from_requests(fuzzing_requests)
+    machine = state_machine.build_state_machine(operations)
+    max_depth = max(
+        1,
+        min(Settings().max_sequence_length, Settings().stateful_max_depth)
+    )
+    plan = state_machine.generate_stateful_sequences(
+        machine,
+        max_states=Settings().stateful_max_states,
+        max_depth=max_depth,
+        baseline_max_depth=2,
+        random_seed=Settings().random_seed,
+    )
+
+    target_sequences = []
+    for sequence_plan in plan.sequences:
+        request_copies = _request_copies_for_plan_sequence(sequence_plan)
+        if request_copies:
+            target_sequences.append(sequences.Sequence(request_copies))
+
+    context = {
+        "machine": machine,
+        "plan": plan,
+        "target_sequences": target_sequences,
+        "coverage": state_machine.StateCoverage(machine),
+    }
+    write_stateful_artifacts(context)
+    return context
+
+
+def create_stateful_replay_targets(fuzzing_requests, plan_path):
+    """Loads a generated plan and maps its operations back to this grammar."""
+    plan = state_machine.load_sequence_plan(plan_path)
+    operations = state_machine.operations_from_requests(fuzzing_requests)
+    by_id = {operation.operation_id: operation for operation in operations}
+    by_identity = {}
+    by_definition = {}
+    for operation in operations:
+        by_identity.setdefault((operation.method, operation.endpoint), operation)
+        if operation.definition_hash:
+            by_definition.setdefault(
+                (operation.method, operation.endpoint, operation.definition_hash),
+                operation
+            )
+
+    target_sequences = []
+    for sequence_plan in plan.sequences:
+        request_copies = []
+        for plan_operation in sequence_plan.operations:
+            operation = by_id.get(plan_operation.operation_id)
+            if operation is None:
+                operation = by_definition.get(
+                    (
+                        plan_operation.method,
+                        plan_operation.endpoint,
+                        plan_operation.definition_hash,
+                    )
+                )
+            if operation is None:
+                operation = by_identity.get(
+                    (plan_operation.method, plan_operation.endpoint)
+                )
+            if operation is None or operation.request is None:
+                continue
+            request_copy = copy.copy(operation.request)
+            request_copy._current_combination_id = 0
+            if not hasattr(request_copy, "stats"):
+                request_copy.stats = requests.SmokeTestStats()
+            request_copies.append(request_copy)
+        if request_copies:
+            target_sequences.append(sequences.Sequence(request_copies))
+
+    context = {
+        "machine": plan.machine,
+        "plan": plan,
+        "target_sequences": target_sequences,
+        "coverage": state_machine.StateCoverage(plan.machine),
+    }
+    write_stateful_artifacts(context)
+    return context
+
+
+def _request_copies_for_plan_sequence(sequence_plan):
+    request_copies = []
+    for operation in sequence_plan.operations:
+        if operation.request is None:
+            continue
+        request_copy = copy.copy(operation.request)
+        request_copy._current_combination_id = 0
+        if not hasattr(request_copy, "stats"):
+            request_copy.stats = requests.SmokeTestStats()
+        request_copies.append(request_copy)
+    return request_copies
+
+
+def write_stateful_artifacts(context):
+    """Writes deterministic plan, model, and coverage reports."""
+    plan = context["plan"]
+    machine = context["machine"]
+    plan_path = os.path.join(logger.LOGS_DIR, "state_sequences.json")
+    model_path = os.path.join(logger.LOGS_DIR, "state_machine.json")
+    report_path = os.path.join(logger.LOGS_DIR, "state_coverage.json")
+    plan.write(plan_path)
+    state_machine._write_json(
+        model_path,
+        machine.state_machine_dict(getattr(plan, "exploration", None)),
+        indent=2
+    )
+    report = state_machine.state_coverage_report(plan)
+    state_machine._write_json(report_path, report, indent=2)
+    return report_path
+
+
+def record_stateful_coverage(context, sequence_collection):
+    """Records actual state transitions from successfully rendered sequences."""
+    if context is None:
+        return
+    coverage = context["coverage"]
+    machine = context["machine"]
+    for rendered_sequence in sequence_collection:
+        state_machine.record_request_sequence(
+            machine, coverage, rendered_sequence.requests
+        )
 
 def validate_dependencies(consumer_req, producer_seq):
     """ Validates that the dependencies required by a consumer are a subset of
@@ -719,7 +852,30 @@ def generate_sequences(fuzzing_requests, checkers, fuzzing_jobs=1, garbage_colle
         extended_requests=[]
 
         specific_target_sequences = None
-        if Settings().in_smoke_test_mode():
+        stateful_context = None
+        if Settings().stateful_sequence_plan and not Settings().in_scenario_replay_mode():
+            stateful_context = create_stateful_replay_targets(
+                fuzzing_requests, Settings().stateful_sequence_plan
+            )
+            specific_target_sequences = stateful_context["target_sequences"]
+            logger.write_to_main(
+                f"{formatting.timestamp()}: Replaying stateful sequence plan "
+                f"{stateful_context['plan'].plan_id} with "
+                f"{len(specific_target_sequences)} sequences\n",
+                print_to_console=True
+            )
+        elif Settings().stateful_sequence_generation and not Settings().in_scenario_replay_mode():
+            stateful_context = create_stateful_sequence_targets(fuzzing_requests)
+            specific_target_sequences = stateful_context["target_sequences"]
+            logger.write_to_main(
+                f"{formatting.timestamp()}: Stateful sequence generation: "
+                f"{len(specific_target_sequences)} sequences, "
+                f"{stateful_context['plan'].coverage.get('transitions_covered', 0)}"
+                f"/{stateful_context['plan'].coverage.get('transitions_total', 0)} "
+                "state transitions covered by the plan\n",
+                print_to_console=True
+            )
+        elif Settings().in_smoke_test_mode():
             specific_target_sequences = []
             for request in fuzzing_requests:
                 req_list = compute_request_goal_seq(request, fuzzing_requests)
@@ -762,7 +918,10 @@ def generate_sequences(fuzzing_requests, checkers, fuzzing_jobs=1, garbage_colle
                 specific_target_sequences.append(sequences.Sequence(req_list))
 
         if specific_target_sequences is not None:
-            max_seq_len = max(max_len, fuzzing_requests.size)
+            max_seq_len = max(
+                [max_len, fuzzing_requests.size]
+                + [sequence.length for sequence in specific_target_sequences]
+            )
 
             for i in range(1, max_seq_len + 1):
                 seq_constraints_by_generation[i] = []
@@ -782,9 +941,17 @@ def generate_sequences(fuzzing_requests, checkers, fuzzing_jobs=1, garbage_colle
             req_order = 0
             for generation_idx in range(1, max_len):
                 for seq in seq_constraints_by_generation[generation_idx]:
-                    if seq.length > 0:
+                    if seq.length > 0 and hasattr(seq.requests[-1], "stats"):
                         seq.requests[-1].stats.request_order = req_order
                         req_order = req_order + 1
+
+            # Specific target sequences may be longer than the maximum sequence
+            # length used to initialize the fuzzing schedule.  Extend the
+            # schedule so the driver can still select a fuzzing mode for every
+            # generation.
+            for length in range(min_len, max_len):
+                if length not in fuzzing_schedule:
+                    fuzzing_schedule[length] = fuzzing_mode
 
         generation = 0
         all_extended_requests = []
@@ -857,6 +1024,8 @@ def generate_sequences(fuzzing_requests, checkers, fuzzing_jobs=1, garbage_colle
                 f"\n(After {fuzzing_schedule[length]} Render)\n"
             )
 
+            record_stateful_coverage(stateful_context, seq_collection)
+
             # saving latest state
             saver.save(GrammarRequestCollection(), seq_collection, fuzzing_requests, Monitor(), generation)
 
@@ -883,6 +1052,15 @@ def generate_sequences(fuzzing_requests, checkers, fuzzing_jobs=1, garbage_colle
                 break
 
         logger.write_to_main("\nTesting completed -- below are the final stats:\n")
+
+    if stateful_context is not None:
+        plan = stateful_context["plan"]
+        plan.actual_coverage = stateful_context["coverage"]
+        report_path = write_stateful_artifacts(stateful_context)
+        logger.write_to_main(
+            f"{formatting.timestamp()}: Stateful coverage report written to {report_path}\n",
+            print_to_console=True
+        )
 
     if Settings().in_smoke_test_mode():
         # Log spec coverage for the never rendered requests

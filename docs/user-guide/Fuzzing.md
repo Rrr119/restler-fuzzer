@@ -6,6 +6,11 @@ In *Fuzz* mode, RESTler will fuzz the service under test during a longer period 
 **Warning** By default, RESTler will not fuzz all value combinations in `fuzz` mode.  You must change the `fuzzing_mode` to `bfs` in order to test all combinations of values provided 
 in the dictionary, enum values, etc.
 
+For APIs with lifecycle-dependent operations, enable
+[state-machine driven sequence generation](StatefulGeneration.md) to cover
+reachable resource states and transitions instead of relying on random request
+combinations.
+
 
 Inputs: (same as for test)
 

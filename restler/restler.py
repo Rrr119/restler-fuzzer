@@ -199,6 +199,21 @@ if __name__ == '__main__':
                              ' One of bfs/bfs-fast/bfs-cheap/bfs-minimal/random-walk/'
                              f'directed-smoke-test (default: {restler_settings.FUZZING_MODE_DEFAULT})',
                         type=str, default=restler_settings.FUZZING_MODE_DEFAULT, required=False)
+    parser.add_argument('--stateful_sequence_generation',
+                        help='Generate dependency-aware sequences from an explicit resource state machine'
+                             ' (default: False)',
+                        action='store_true')
+    parser.add_argument('--stateful_max_states',
+                        help='Maximum number of resource states explored by stateful sequence generation'
+                             ' (default: 10000)',
+                        type=int, default=10000, required=False)
+    parser.add_argument('--stateful_max_depth',
+                        help='Maximum sequence depth used by stateful sequence generation'
+                             ' (default: 20)',
+                        type=int, default=20, required=False)
+    parser.add_argument('--stateful_sequence_plan',
+                        help='Replay a previously generated state_sequences.json plan',
+                        type=str, default=None, required=False)
     parser.add_argument('--ignore_feedback',
                         help='Ignore server-side feedback (default: False)',
                         type=bool, default=False, required=False)

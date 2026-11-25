@@ -9,6 +9,7 @@ with an OpenAPI (formerly Swagger) specification, RESTler analyzes its entire sp
 and then generates and executes tests that exercise the service through its REST API.
 
 RESTler intelligently infers producer-consumer dependencies among request types from the OpenAPI definition.
+State-machine driven generation can additionally make resource lifecycle states explicit and emit deterministic, replayable sequences that cover reachable state transitions ([details](./docs/user-guide/StatefulGeneration.md)).
 During testing, it checks for specific classes of bugs
 and dynamically learns how the service behaves from prior service responses.
 This intelligence allows RESTler to explore deeper service states

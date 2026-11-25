@@ -414,6 +414,14 @@ class RestlerSettings(object):
         self._fuzzing_jobs = SettingsArg('fuzzing_jobs', int, 1, user_args, minval=1)
         ## The fuzzing mode (bfs/bfs-cheap/random-walk/directed-smoke-test)
         self._fuzzing_mode = SettingsArg('fuzzing_mode', str, FUZZING_MODE_DEFAULT, user_args)
+        ## Generate dependency-aware sequences from an explicit resource state machine
+        self._stateful_sequence_generation = SettingsArg('stateful_sequence_generation', bool, False, user_args)
+        ## Maximum number of resource states explored by stateful sequence generation
+        self._stateful_max_states = SettingsArg('stateful_max_states', int, 10000, user_args, minval=1)
+        ## Maximum sequence depth used by stateful sequence generation
+        self._stateful_max_depth = SettingsArg('stateful_max_depth', int, 20, user_args, minval=1)
+        ## Replay a previously generated state-machine sequence plan
+        self._stateful_sequence_plan = SettingsArg('stateful_sequence_plan', str, None, user_args)
         ## Length of time between garbage collection calls (None = no garbage collection)
         self._garbage_collection_interval = SettingsArg('garbage_collection_interval', int, None, user_args, minval=0)
         ## Trace database settings
@@ -610,6 +618,22 @@ class RestlerSettings(object):
     @property
     def fuzzing_mode(self):
         return self._fuzzing_mode.val
+
+    @property
+    def stateful_sequence_generation(self):
+        return self._stateful_sequence_generation.val
+
+    @property
+    def stateful_max_states(self):
+        return self._stateful_max_states.val
+
+    @property
+    def stateful_max_depth(self):
+        return self._stateful_max_depth.val
+
+    @property
+    def stateful_sequence_plan(self):
+        return self._stateful_sequence_plan.val
 
     @property
     def garbage_collection_interval(self):
@@ -1122,6 +1146,10 @@ class RestlerSettings(object):
                                         " for random walk method")
         if self.request_throttle_ms and self.fuzzing_jobs != 1:
             raise OptionValidationError("Request throttling not available for multiple fuzzing jobs")
+        if self.stateful_sequence_plan and not os.path.isfile(self.stateful_sequence_plan):
+            raise OptionValidationError(
+                f"Stateful sequence plan does not exist at path {self.stateful_sequence_plan}"
+            )
         if self.custom_bug_codes and self.custom_non_bug_codes:
             raise OptionValidationError("Both custom_bug_codes and custom_non_bug_codes lists were specified. "
                                         "Specifying both lists is not allowed.")

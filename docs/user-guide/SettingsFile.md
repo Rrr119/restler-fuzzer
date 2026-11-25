@@ -143,6 +143,20 @@ The fuzzing mode. Options are:
 * random-walk
 * directed-smoke-test
 
+### stateful_sequence_generation: bool (default False)
+Generate deterministic, dependency-aware sequences from an explicit resource
+state machine. See [State-Machine Driven Sequence Generation](StatefulGeneration.md).
+
+### stateful_max_states: int (default 10000)
+Maximum number of resource states explored when stateful sequence generation is
+enabled.
+
+### stateful_max_depth: int (default 20)
+Maximum sequence depth used when stateful sequence generation is enabled.
+
+### stateful_sequence_plan: str (default None)
+Path to a previously generated `state_sequences.json` plan to replay.
+
 ### garbage_collection_interval: int (default None)
 Length of time between garbage collection calls (seconds, None = no garbage collection)
 
